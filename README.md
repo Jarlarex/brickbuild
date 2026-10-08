@@ -23,6 +23,20 @@ Check the setup:
 uv run brickbuild library
 ```
 
+## Usage
+
+```
+uv run brickbuild build model.glb --size 32 --out out/
+```
+
+This writes `out/model.ldr` plus one file per stage (`.mesh.glb`,
+`.voxels.npz`, `.layout.json`). The stages can also be run one at a time:
+`brickbuild mesh`, `voxelize`, `layout`, `ldraw`. Use `--up z` for Z up
+input such as many STL exports. Test meshes for manual runs:
+`uv run python -m tests.fixtures out/fixtures`.
+
+Stability is not checked yet (phase 2), and the output says so.
+
 ## Development
 
 ```
