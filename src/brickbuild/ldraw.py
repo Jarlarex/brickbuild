@@ -16,7 +16,9 @@ from pathlib import Path
 
 import numpy as np
 
+from brickbuild.brick import Brick
 from brickbuild.env import LIBRARY_ENV
+from brickbuild.parts import get_part
 
 LDU_MM = 0.4
 LDU_PER_STUD = 20
@@ -144,3 +146,108 @@ class LDrawLibrary:
 
 # Stud primitives (stud*.dat, stug*.dat). Leaving them out gives the brick body.
 STUD_PRIMITIVES = ("stud", "stug")
+
+
+# Model writing and reading ----------------------------------------------
+#
+# Grid frame: x, up (in plates), z; right handed, the frame of the Y up input
+# mesh. LDraw frame: X = x, Y = -up, Z = -z. That is a rotation of 180 degrees
+# about X, which puts -Y up without mirroring the model.
+
+GRID_TO_LDRAW = np.diag([LDU_PER_STUD, -LDU_PER_PLATE, -LDU_PER_STUD]).astype(float)
+
+# Part rotations about the vertical axis. At 90 degrees the part's local X
+# axis runs along grid z, so its footprint (sx, sz) becomes (w, d) = (sz, sx).
+ROTATIONS = {
+    0: np.eye(3),
+    90: np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]]),
+}
+# Accepted when reading: 180 and 270 degrees give the same footprints as 0 and 90.
+_READ_ROTATIONS = (
+    (0, ROTATIONS[0]),
+    (90, ROTATIONS[90]),
+    (0, np.diag([-1.0, 1.0, -1.0])),
+    (90, np.array([[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]])),
+)
+
+
+def grid_to_ldraw(point) -> np.ndarray:
+    """(x studs, up plates, z studs) to LDraw (X, Y, Z) in LDU."""
+    return GRID_TO_LDRAW @ np.asarray(point, dtype=float)
+
+
+def ldraw_to_grid(point) -> np.ndarray:
+    return np.linalg.solve(GRID_TO_LDRAW, np.asarray(point, dtype=float))
+
+
+def placement(brick: Brick) -> tuple[np.ndarray, np.ndarray]:
+    """LDraw position and rotation matrix that put `brick`'s part on its grid spot."""
+    part = get_part(brick.part)
+    rotation = ROTATIONS[brick.rot]
+    bottom_centre = grid_to_ldraw((brick.x + brick.w / 2, brick.y, brick.z + brick.d / 2))
+    return bottom_centre - rotation @ np.asarray(part.bottom_centre, dtype=float), rotation
+
+
+def part_line(brick: Brick) -> str:
+    position, rotation = placement(brick)
+    numbers = [*position, *rotation.ravel()]
+    return f"1 {brick.colour} {' '.join(_num(v) for v in numbers)} {brick.part}.dat"
+
+
+def write_model(bricks: list[Brick], path: Path | str, title: str) -> None:
+    """Write an .ldr file, bottom layer first, with one STEP per layer."""
+    path = Path(path)
+    lines = [
+        f"0 {title}",
+        f"0 Name: {path.name}",
+        "0 Author: brickbuild",
+        "",
+    ]
+    by_layer: dict[int, list[Brick]] = {}
+    for brick in bricks:
+        by_layer.setdefault(brick.y, []).append(brick)
+    for y in sorted(by_layer):
+        lines += [part_line(b) for b in sorted(by_layer[y], key=lambda b: (b.z, b.x))]
+        lines.append("0 STEP")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+
+
+def read_model(path: Path | str) -> list[Brick]:
+    """Read back the part lines of an .ldr file written by `write_model`.
+
+    Only catalogue parts placed upright on the stud grid are accepted.
+    """
+    bricks = []
+    for number, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
+        tok = line.split()
+        if not tok or tok[0] != "1":
+            continue
+        where = f"{path}:{number}"
+        if len(tok) < 15:
+            raise ValueError(f"{where}: malformed part line")
+        part_id = " ".join(tok[14:]).lower().removesuffix(".dat")
+        try:
+            part = get_part(part_id)
+        except KeyError as exc:
+            raise ValueError(f"{where}: {exc.args[0]}") from None
+        vals = np.array(tok[2:14], dtype=float)
+        position, matrix = vals[:3], vals[3:].reshape(3, 3)
+        rot = next((r for r, m in _READ_ROTATIONS if np.allclose(matrix, m)), None)
+        if rot is None:
+            raise ValueError(f"{where}: part is not upright with a 90 degree step rotation")
+        w, d = part.footprint(rot)
+        centre = ldraw_to_grid(position + matrix @ np.asarray(part.bottom_centre, dtype=float))
+        corner = centre - (w / 2, 0, d / 2)
+        rounded = np.round(corner)
+        if not np.allclose(corner, rounded, atol=1e-6):
+            raise ValueError(f"{where}: part is not on the stud grid")
+        x, y, z = (int(v) for v in rounded)
+        bricks.append(Brick(part.id, x, y, z, w, d, part.h, rot, int(tok[1])))
+    return bricks
+
+
+def _num(value: float) -> str:
+    rounded = round(value)
+    if abs(value - rounded) < 1e-9:
+        return str(int(rounded)) if rounded != 0 else "0"
+    return f"{value:.6g}"
