@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+
+# Local configuration (machine specific paths, secrets)
+.env
+
+# Third party data such as the LDraw parts library
+vendor/
+
+# Build outputs
+out/

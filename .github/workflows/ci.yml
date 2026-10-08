@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      LDRAW_LIBRARY_PATH: ${{ github.workspace }}/vendor/ldraw
+      # Fail instead of skipping tests that need the LDraw library.
+      BRICKBUILD_REQUIRE_LIBRARY: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.2.0
+
+      - name: Restore LDraw library
+        id: ldraw-cache
+        uses: actions/cache@v6
+        with:
+          path: vendor/ldraw
+          # Bump the suffix to pick up a newer library release.
+          key: ldraw-complete-2026-10
+
+      - name: Download LDraw library
+        if: steps.ldraw-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -L --fail -sS -o "$RUNNER_TEMP/complete.zip" https://library.ldraw.org/library/updates/complete.zip
+          mkdir -p vendor
+          unzip -q "$RUNNER_TEMP/complete.zip" -d vendor
+          test -f vendor/ldraw/LDConfig.ldr
+          test -d vendor/ldraw/parts
+
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run brickbuild --help
+      - run: uv run pytest
